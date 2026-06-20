@@ -5,42 +5,64 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, Remo
 from langchain_ollama import ChatOllama
 import sqlite3
 import json
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from state import State
-
+from chatbot import chatbot
+from summary import summary
 load_dotenv()
 
 # Initialize StateGraph
 graph = StateGraph(State)
 
-# Initialize LLM
-llm = ChatOllama(model="gemma4:12b", verbose=True, temperature=0.9, reasoning = True, num_predict = 2048)
+
 
 # Create Nodes
+# 1.chatbot node
+# 2.summary node
+# 3.conditional edge
 
-# chat node
-def chatbot(state: State) -> State:
-    summary = state["summary"]
-    if summary:
-        system_message ="""
-        You are continuing a conversation with a human. Here is the summary of the conversation so far:
-        {summary}
-        Use this summary as a prior context to generate your response.  Ensure the response feels natural, maintains the flow of the conversation, and  addresses the user's most recent message appropriately.
-        """
-        messages = [SystemMessage(system_message)] +state["messages"]
-    else:
-        system_message = """
-        You are an Intelligent conversation chatbot designed to engage in natural and meaningful conversations with users. Your primary goal is to provide helpful, informative, and engaging responses to user inputs. You should strive to understand the user's intent and context, and respond in a way that is relevant and adds value to the conversation.
-        
-        Make sure to :
-        1. Understand the full contextof messages provided
-        2. Generate responses that are coherent, contextually relevant, and engaging.
-        3.Address any  question or unresolved point.
-        """
-        messages = [SystemMessage(system_message)] + state["messages"]
+def should_continue(state:State)-> str:
+
+    messages = state.get("messages")
+
+    if len(messages) > 6:
+        return "SUMMARY"
     
-    response = llm.invoke(messages)
+    return END
 
-    return {
-        "messages": [AIMessage(content = response.content)]
-    }
+# Build Graph
+
+ # Add Nodes
+graph.add_node("CHATBOT", chatbot)
+graph.add_node("SUMMARY", summary)
+
+# Add Edges
+graph.add_edge(START, "CHATBOT")
+graph.add_conditional_edges("CHATBOT", should_continue)
+graph.add_edge("SUMMARY", END)
+
+# Compile Graph with Memory
+connection = sqlite3.connect("graph_memory.db", check_same_thread=False)
+saver = SqliteSaver(connection)
+compiled_graph = graph.compile(checkpointer=saver)
+
+# print graph
+# print(compiled_graph.get_graph().draw_mermaid_png)
+
+# Create Chatbot Instance
+config = {"configurable":{"thread_id": "1"}}
+
+print("Starting Chatbot...")
+
+while True:
+    user_input = input("User: ")
+    if user_input.lower() == "exit":
+        break
+
+    # Create initial state
+    human_message = HumanMessage(content=user_input)
+
+    # Graph invokation
+    response = compiled_graph.invoke({"messages":[human_message]}, config=config)
+    print(response)
